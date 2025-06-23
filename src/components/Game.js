@@ -1,177 +1,108 @@
+// src/components/Game.js
+
 import React, { useEffect, useRef, useState } from 'react';
-import { io } from 'socket.io-client';
 
-const socket = io('https://aegame.onrender.com'); // 🔗 Coloque aqui sua URL do backend Render
-
-const Game = () => {
-    const [players, setPlayers] = useState([]);
-    const [room, setRoom] = useState('');
-    const localVideo = useRef();
-    const peersRef = useRef({});
-    const [name, setName] = useState('');
+const Game = ({ muted, onStreamReady }) => {
+    const localVideoRef = useRef(null);
+    const [cameraOn, setCameraOn] = useState(true);
+    const [microphoneOn, setMicrophoneOn] = useState(true);
+    const streamRef = useRef(null);
 
     useEffect(() => {
+        const getMedia = async () => {
+            try {
+                // Tenta obter vídeo e áudio.
+                // Se quiser testar APENAS com microfone, mude 'video: true' para 'video: false'.
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: true, // Mudar para 'false' para desabilitar a câmera
+                    audio: true,
+                });
+                streamRef.current = stream;
+
+                // Anexa a stream ao elemento de vídeo local (se houver um track de vídeo)
+                if (localVideoRef.current) {
+                    localVideoRef.current.srcObject = stream;
+                }
+
+                // Garante que o estado inicial dos botões reflete o que foi obtido
+                setCameraOn(stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled);
+                setMicrophoneOn(stream.getAudioTracks().length > 0 && stream.getAudioTracks()[0].enabled);
+
+
+                // Envia a stream para o componente pai (App.js ou GamePage.js)
+                if (onStreamReady) {
+                    onStreamReady(stream);
+                }
+            } catch (error) {
+                // !!! IMPORTANTE: O alert foi removido para que você possa ver o erro no console.
+                // A mensagem exata de 'error' é crucial para depuração.
+                console.error("Erro ao acessar câmera/microfone:", error);
+                // alert("Permita acesso à câmera e microfone para continuar."); // Comentado para depuração
+            }
+        };
+
         getMedia();
 
-        socket.on('usersInRoom', (users) => {
-            setPlayers(users);
-        });
-
-        socket.on('newUser', (userId) => {
-            const peer = createPeer(userId);
-            peersRef.current[userId] = peer;
-        });
-
-        socket.on('signal', ({ source, signal }) => {
-            const peer = peersRef.current[source];
-            if (peer) {
-                peer.signal(signal);
-            } else {
-                const newPeer = addPeer(source, signal);
-                peersRef.current[source] = newPeer;
-            }
-        });
-
+        // Função de limpeza para parar as tracks da mídia quando o componente desmontar
         return () => {
-            socket.disconnect();
+            if (streamRef.current) {
+                streamRef.current.getTracks().forEach((track) => track.stop());
+                streamRef.current = null;
+            }
         };
-    }, []);
+    }, []); // O array de dependências vazio significa que este efeito roda uma vez ao montar
 
-    const getMedia = async () => {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: true,
-                audio: true,
+    useEffect(() => {
+        // Atualiza o estado do microfone quando a prop 'muted' externa mudar
+        if (streamRef.current) {
+            streamRef.current.getAudioTracks().forEach((track) => {
+                track.enabled = !muted;
             });
+            setMicrophoneOn(!muted); // Atualiza o estado interno para o botão
+        }
+    }, [muted]);
 
-            localVideo.current.srcObject = stream;
-        } catch (err) {
-            alert('Erro ao acessar câmera/microfone');
-            console.error(err);
+    const toggleCamera = () => {
+        if (streamRef.current) {
+            const videoTrack = streamRef.current.getVideoTracks()[0];
+            if (videoTrack) {
+                videoTrack.enabled = !videoTrack.enabled;
+                setCameraOn(videoTrack.enabled);
+            } else {
+                console.warn("Nenhuma faixa de vídeo encontrada. Câmera não pôde ser ligada/desligada.");
+            }
         }
     };
 
-    const joinRoom = () => {
-        if (!room) return;
-        socket.emit('joinRoom', room);
-    };
-
-    const createPeer = (userId) => {
-        const peer = new RTCPeerConnection({
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-        });
-
-        const localStream = localVideo.current.srcObject;
-        localStream.getTracks().forEach((track) => {
-            peer.addTrack(track, localStream);
-        });
-
-        peer.onicecandidate = (e) => {
-            if (e.candidate) {
-                socket.emit('signal', {
-                    target: userId,
-                    signal: { candidate: e.candidate },
-                });
+    const toggleMicrophone = () => {
+        if (streamRef.current) {
+            const audioTrack = streamRef.current.getAudioTracks()[0];
+            if (audioTrack) {
+                audioTrack.enabled = !audioTrack.enabled;
+                setMicrophoneOn(audioTrack.enabled);
             }
-        };
-
-        peer.ontrack = (e) => {
-            const remoteVideo = document.getElementById(userId);
-            if (remoteVideo) {
-                remoteVideo.srcObject = e.streams[0];
-            }
-        };
-
-        peer.onnegotiationneeded = async () => {
-            const offer = await peer.createOffer();
-            await peer.setLocalDescription(offer);
-            socket.emit('signal', {
-                target: userId,
-                signal: { description: peer.localDescription },
-            });
-        };
-
-        return peer;
-    };
-
-    const addPeer = (userId, incomingSignal) => {
-        const peer = new RTCPeerConnection({
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-        });
-
-        const localStream = localVideo.current.srcObject;
-        localStream.getTracks().forEach((track) => {
-            peer.addTrack(track, localStream);
-        });
-
-        peer.onicecandidate = (e) => {
-            if (e.candidate) {
-                socket.emit('signal', {
-                    target: userId,
-                    signal: { candidate: e.candidate },
-                });
-            }
-        };
-
-        peer.ontrack = (e) => {
-            const remoteVideo = document.getElementById(userId);
-            if (remoteVideo) {
-                remoteVideo.srcObject = e.streams[0];
-            }
-        };
-
-        peer.setRemoteDescription(new RTCSessionDescription(incomingSignal.description)).then(async () => {
-            const answer = await peer.createAnswer();
-            await peer.setLocalDescription(answer);
-            socket.emit('signal', {
-                target: userId,
-                signal: { description: peer.localDescription },
-            });
-        });
-
-        return peer;
+        }
     };
 
     return (
         <div>
-            <h1>Jogo de Vídeo</h1>
-            <input
-                placeholder="Seu nome"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
+            <h3>Seu vídeo</h3>
+            {/* O elemento video só será exibido se houver uma stream com vídeo */}
+            <video
+                ref={localVideoRef}
+                autoPlay
+                muted // Muta seu próprio áudio localmente para evitar eco
+                playsInline
+                width="200"
+                style={{ transform: 'scaleX(-1)', border: '2px solid #ccc' }}
             />
-            <input
-                placeholder="Sala"
-                value={room}
-                onChange={(e) => setRoom(e.target.value)}
-            />
-            <button onClick={joinRoom}>Entrar na Sala</button>
-
-            <div>
-                <h3>Você</h3>
-                <video
-                    ref={localVideo}
-                    autoPlay
-                    playsInline
-                    muted
-                    style={{ width: '200px' }}
-                />
-            </div>
-
-            <div>
-                {players.map((id) => (
-                    id !== socket.id && (
-                        <div key={id}>
-                            <h3>{id}</h3>
-                            <video
-                                id={id}
-                                autoPlay
-                                playsInline
-                                style={{ width: '200px' }}
-                            />
-                        </div>
-                    )
-                ))}
+            <div style={{ marginTop: '10px' }}>
+                <button onClick={toggleCamera}>
+                    {cameraOn ? 'Desligar Câmera' : 'Ligar Câmera'}
+                </button>
+                <button onClick={toggleMicrophone}>
+                    {microphoneOn ? 'Desligar Microfone' : 'Ligar Microfone'}
+                </button>
             </div>
         </div>
     );
